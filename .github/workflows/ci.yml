@@ -32,14 +32,11 @@ on:
     branches: [main]
 
 env:
-  # (MISE_DATA_DIR defined at job level)
+  # mise uses default data dir (~/.local/share/mise) on CI runners
 
 jobs:
   build-and-test:
     runs-on: macos-latest
-    env:
-      MISE_DATA_DIR: ${{ runner.temp }}/mise
-
     steps:
       # ── Checkout ────────────────────────────────────────────────
       - name: Checkout repository
