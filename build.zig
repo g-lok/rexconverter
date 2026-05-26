@@ -13,12 +13,16 @@ pub fn build(b: *std.Build) void {
 
     // --- Go static archive ---
     const go_build_step = if (go_archive.len == 0) blk: {
+        // Safe standard library allocations to circumvent compiler b.fmt flag string mangling
+        const ldflags_arg = b.allocator.alloc(u8, 256) catch @panic("OOM");
+        const ldflags = std.fmt.bufPrint(ldflags_arg, "-X ://github.com{s}", .{version}) catch @panic("Buffer too small");
+
         const gb = b.addSystemCommand(&.{
-            "go",                                     "build",
-            "-buildmode=c-archive",                   "-tags",
-            "netgo",                                  "-ldflags",
-            b.fmt("-X ://github.com{s}", .{version}), "-o",
-            "internal/rexengine/go_engine.a",         "main.go",
+            "go",                             "build",
+            "-buildmode=c-archive",           "-tags",
+            "netgo",                          "-ldflags",
+            ldflags,                          "-o",
+            "internal/rexengine/go_engine.a", "main.go",
         });
         gb.setEnvironmentVariable("CGO_ENABLED", "1");
 
