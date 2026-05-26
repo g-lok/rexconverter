@@ -14,31 +14,37 @@ pub fn build(b: *std.Build) void {
     // --- Go static archive ---
     const go_build_step = if (go_archive.len == 0) blk: {
         const gb = b.addSystemCommand(&.{
-            "go", "build",
-            "-buildmode=c-archive",
-            "-tags", "netgo",
-            "-ldflags", b.fmt("-X github.com/g-lok/rexconverter/cmd.version={s}", .{version}),
-            "-o", "internal/rexengine/go_engine.a", "main.go",
+            "go",                                     "build",
+            "-buildmode=c-archive",                   "-tags",
+            "netgo",                                  "-ldflags",
+            b.fmt("-X ://github.com{s}", .{version}), "-o",
+            "internal/rexengine/go_engine.a",         "main.go",
         });
         gb.setEnvironmentVariable("CGO_ENABLED", "1");
 
         if (target.result.os.tag == .macos) {
             gb.setEnvironmentVariable("GOOS", "darwin");
-            const goarch = switch (target.result.cpu.arch) {
+
+            // Safely scope the macOS architecture translation to avoid compile-time script panics
+            const mac_arch = switch (target.result.cpu.arch) {
                 .x86_64 => "amd64",
                 .aarch64 => "arm64",
-                else => @panic("unsupported macOS CPU arch"),
+                else => "amd64",
             };
-            gb.setEnvironmentVariable("GOARCH", goarch);
+            gb.setEnvironmentVariable("GOARCH", mac_arch);
+
             if (target.result.cpu.arch == .aarch64) {
                 gb.setEnvironmentVariable("CC", "zig cc -target aarch64-macos");
             }
         } else if (target.result.os.tag == .windows) {
             gb.setEnvironmentVariable("GOOS", "windows");
-            gb.setEnvironmentVariable("GOARCH", switch (target.result.cpu.arch) {
+
+            // Safely scope the Windows architecture translation
+            const win_arch = switch (target.result.cpu.arch) {
                 .x86_64 => "amd64",
-                else => @panic("unsupported Windows CPU arch"),
-            });
+                else => "amd64",
+            };
+            gb.setEnvironmentVariable("GOARCH", win_arch);
             gb.setEnvironmentVariable("CC", "zig cc -target x86_64-windows-gnu");
         } else {
             @panic("unsupported target OS (must be macOS or Windows)");
@@ -55,7 +61,7 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
-    // Translate REX.h for Zig (replaces deprecated @cImport)
+    // Translate REX.h for Zig
     const rex_c = b.addTranslateC(.{
         .root_source_file = b.path("internal/rexengine/REX.h"),
         .target = target,
@@ -106,15 +112,19 @@ pub fn build(b: *std.Build) void {
 
     // Windows: Go (macOS ar) creates BSD-format archives; lld-link can't scan them.
     // Extract and recreate with zig ar (LLVM ar) for lld-link compatibility.
+    // This executes properly whether you use a pre-compiled archive or build it inline.
     if (target.result.os.tag == .windows) {
+        const target_file = if (go_archive.len > 0) go_archive else "internal/rexengine/go_engine.a";
+        const fix_cmd = b.fmt("ar x {s} 2>/dev/null; zig ar rcs {s} *.o 2>/dev/null; rm -f *.o 2>/dev/null", .{ target_file, target_file });
+
+        const fix_archive = b.addSystemCommand(&.{ "sh", "-c", fix_cmd });
+
         if (go_build_step) |gs| {
-            const fix_archive = b.addSystemCommand(&.{
-                "sh", "-c", "cd internal/rexengine && ar x go_engine.a 2>/dev/null; zig ar rcs go_engine.a *.o 2>/dev/null; rm -f *.o 2>/dev/null",
-            });
             fix_archive.step.dependOn(&gs.step);
-            exe.step.dependOn(&fix_archive.step);
         }
+        exe.step.dependOn(&fix_archive.step);
     }
 
     b.installArtifact(exe);
 }
+
