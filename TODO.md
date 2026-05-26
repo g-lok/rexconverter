@@ -187,15 +187,9 @@ When `--tempo` is not specified, skip `REXStartPreview`/`REXStopPreview` and use
 - Returns deinterleaved PCM per-slice (SDK-native format), interleaved in Zig
 - Go bridge stays same — just calls different Zig function based on `cfg.Tempo == 0`
 
-### 6.2 Framework Staging in Build Pipeline
+### 6.2 [DONE] Framework Staging in Build Pipeline
 
-Currently `install_name_tool` patches the rpath, but `build/Frameworks/` must be created manually. Add a build step (mise or Zig) that copies the framework from `internal/rexengine/libs/macos/` so `mise run build` produces a directly runnable binary.
-
-**Changes needed**:
-- Add copy step in `mise.toml` or `build.zig`:
-  ```bash
-  mkdir -p build/Frameworks && cp -R internal/rexengine/libs/macos/ build/Frameworks/
-  ```
+Moved framework staging directly to the `build` task in `mise.toml`. It now automatically creates the `build/Frameworks/` directory and copies `REX Shared Library.framework` into it on compile time. This allows the compiled binary to run directly and lets CI run the integration test suite successfully.
 
 ### 6.3 [DONE] Migrated from `@cImport` to `b.addTranslateC()`
 
