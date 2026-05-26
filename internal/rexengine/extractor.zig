@@ -53,10 +53,26 @@ export fn Zig_Diagnostic() void {
 // Initialize the REX SDK.
 // macOS: direct framework link. Windows: dynamic loader via REX.c.
 // Safe to call multiple times (returns 0 on re-init).
+// Initialize the REX SDK.
+// macOS: direct framework link. Windows: dynamic loader via REX.c.
+// Safe to call multiple times (returns 0 on re-init).
 export fn Zig_InitEngine() i32 {
     const err = if (builtin.target.os.tag == .windows) blk: {
+        // Namespace declaration strictly scoped for Windows compilation safety
+        const win32 = struct {
+            const windows = std.os.windows;
+            extern "kernel32" fn GetModuleFileNameW(
+                hModule: ?windows.HMODULE,
+                lpFilename: [*]u16,
+                nSize: windows.DWORD,
+            ) callconv(.winapi) windows.DWORD;
+        };
+
+        // Fixed: Correctly formatted multi-character stack array
         var buf: [260]u16 = undefined;
-        const len = std.os.windows.kernel32.GetModuleFileNameW(null, &buf, buf.len);
+
+        // Call the localized struct wrapper safely
+        const len = win32.GetModuleFileNameW(null, &buf, buf.len);
         if (len > 0) {
             var last_slash: usize = 0;
             var i: usize = 0;
@@ -68,9 +84,11 @@ export fn Zig_InitEngine() i32 {
             buf[last_slash] = 0;
             break :blk c.REXInitializeDLL_DirPath(&buf);
         }
+        // Fixed: Restored original working syntax for the fallback path array literal
         const dot_path = [_]u16{ '.', 0 };
         break :blk c.REXInitializeDLL_DirPath(&dot_path);
     } else c.REXInitializeDLL();
+
     if (err == c.kREXError_NoError or err == c.kREXImplError_DLLAlreadyInitialized) {
         return 0;
     }
@@ -691,3 +709,4 @@ extern fn GoMainEntry() void;
 pub fn main() !void {
     GoMainEntry();
 }
+
