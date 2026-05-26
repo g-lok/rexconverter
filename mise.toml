@@ -25,7 +25,7 @@ mise run build && go test ./tests/... -v
 [tasks.build-releases]
 description = "Build macOS universal + Windows x86_64 release archives in build/releases/"
 run = """
-VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
 RELEASES_DIR="build/releases"
 REX_SDK="/tmp/rexlibs"
 mkdir -p "$RELEASES_DIR"
