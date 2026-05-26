@@ -55,6 +55,19 @@ export fn Zig_Diagnostic() void {
 // Safe to call multiple times (returns 0 on re-init).
 export fn Zig_InitEngine() i32 {
     const err = if (builtin.target.os.tag == .windows) blk: {
+        var buf: [260]u16 = undefined;
+        const len = std.os.windows.kernel32.GetModuleFileNameW(null, &buf, buf.len);
+        if (len > 0) {
+            var last_slash: usize = 0;
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                if (buf[i] == '\\' or buf[i] == '/') {
+                    last_slash = i;
+                }
+            }
+            buf[last_slash] = 0;
+            break :blk c.REXInitializeDLL_DirPath(&buf);
+        }
         const dot_path = [_]u16{ '.', 0 };
         break :blk c.REXInitializeDLL_DirPath(&dot_path);
     } else c.REXInitializeDLL();
