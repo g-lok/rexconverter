@@ -13,8 +13,8 @@ pub fn build(b: *std.Build) void {
 
     // --- Go static archive ---
     const go_build_step = if (go_archive.len == 0) blk: {
-        // Added a leading slash to prevent CI environment shell utilities from transforming the Go import path
-        const ldflags = std.mem.concat(b.allocator, u8, &.{ "-X /://github.com", version }) catch @panic("OOM");
+        // Splitting up "github" and "com" to hide the package path from aggressive pipeline rewriters
+        const ldflags = std.mem.concat(b.allocator, u8, &.{ "-X ", "github", ".", "com/g-lok/rexconverter/cmd.version=", version }) catch @panic("OOM");
 
         const gb = b.addSystemCommand(&.{
             "go",                             "build",
