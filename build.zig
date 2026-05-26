@@ -25,27 +25,33 @@ pub fn build(b: *std.Build) void {
         if (target.result.os.tag == .macos) {
             gb.setEnvironmentVariable("GOOS", "darwin");
 
-            // Safely scope the macOS architecture translation to avoid compile-time script panics
-            const mac_arch = switch (target.result.cpu.arch) {
-                .x86_64 => "amd64",
-                .aarch64 => "arm64",
-                else => "amd64",
-            };
-            gb.setEnvironmentVariable("GOARCH", mac_arch);
-
-            if (target.result.cpu.arch == .aarch64) {
-                gb.setEnvironmentVariable("CC", "zig cc -target aarch64-macos");
+            switch (target.result.cpu.arch) {
+                .x86_64 => {
+                    gb.setEnvironmentVariable("GOARCH", "amd64");
+                    gb.setEnvironmentVariable("CC", "zig cc -target x86_64-macos");
+                },
+                .aarch64 => {
+                    gb.setEnvironmentVariable("GOARCH", "arm64");
+                    gb.setEnvironmentVariable("CC", "zig cc -target aarch64-macos");
+                },
+                else => {
+                    gb.setEnvironmentVariable("GOARCH", "amd64");
+                    gb.setEnvironmentVariable("CC", "zig cc -target x86_64-macos");
+                },
             }
         } else if (target.result.os.tag == .windows) {
             gb.setEnvironmentVariable("GOOS", "windows");
 
-            // Safely scope the Windows architecture translation
-            const win_arch = switch (target.result.cpu.arch) {
-                .x86_64 => "amd64",
-                else => "amd64",
-            };
-            gb.setEnvironmentVariable("GOARCH", win_arch);
-            gb.setEnvironmentVariable("CC", "zig cc -target x86_64-windows-gnu");
+            switch (target.result.cpu.arch) {
+                .x86_64 => {
+                    gb.setEnvironmentVariable("GOARCH", "amd64");
+                    gb.setEnvironmentVariable("CC", "zig cc -target x86_64-windows-gnu");
+                },
+                else => {
+                    gb.setEnvironmentVariable("GOARCH", "amd64");
+                    gb.setEnvironmentVariable("CC", "zig cc -target x86_64-windows-gnu");
+                },
+            }
         } else {
             @panic("unsupported target OS (must be macOS or Windows)");
         }
@@ -112,7 +118,6 @@ pub fn build(b: *std.Build) void {
 
     // Windows: Go (macOS ar) creates BSD-format archives; lld-link can't scan them.
     // Extract and recreate with zig ar (LLVM ar) for lld-link compatibility.
-    // This executes properly whether you use a pre-compiled archive or build it inline.
     if (target.result.os.tag == .windows) {
         const target_file = if (go_archive.len > 0) go_archive else "internal/rexengine/go_engine.a";
         const fix_cmd = b.fmt("ar x {s} 2>/dev/null; zig ar rcs {s} *.o 2>/dev/null; rm -f *.o 2>/dev/null", .{ target_file, target_file });
@@ -127,4 +132,3 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 }
-
