@@ -49,5 +49,8 @@ profile.cov
 go.work
 go.work.sum
 
+# Private notes (not for public repo)
+PRIVATE.md
+
 # env file
 .env
