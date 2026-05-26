@@ -27,16 +27,20 @@ mise run build && go test ./tests/... -v
 [tasks.build-releases]
 description = "Build macOS universal + Windows x86_64 release archives in build/releases/"
 run = """
-VERSION="$(git describe --tags --always 2>/dev/null || echo dev)"
+VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 RELEASES_DIR="build/releases"
 REX_SDK="/tmp/rexlibs"
 mkdir -p "$RELEASES_DIR"
+
+# Prevent CI shell parsers and path conversion layers from mangling the Go package URL path
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL="*"
 LDFLAGS="-X github.com/g-lok/rexconverter/cmd.version=$VERSION"
 
 echo "=== Building Go archives ==="
 
-# macOS amd64
-CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -buildmode=c-archive -tags netgo \
+# macOS amd64 (Explicitly pin zig cc to prevent arm64 runner compilation leaks)
+CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 CC="zig cc -target x86_64-macos" go build -buildmode=c-archive -tags netgo \
   "-ldflags=$LDFLAGS" -o "build/go_engine_amd64.a" main.go
 
 # macOS arm64
@@ -47,8 +51,8 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 CC="zig cc -target aarch64-macos" go buil
 CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC="zig cc -target x86_64-windows-gnu" go build -buildmode=c-archive -tags netgo \
   "-ldflags=$LDFLAGS" -o "build/go_engine_windows.a" main.go
 
-# Fix BSD ar format → lld-link compatible (Go on macOS uses macOS ar)
-cd build && ar x go_engine_windows.a 2>/dev/null && zig ar rcs go_engine_windows.a *.o 2>/dev/null && rm -f *.o 2>/dev/null && cd ..
+# Fix BSD ar format → lld-link compatible (Explicitly use zig ar toolchain system)
+cd build && zig ar x go_engine_windows.a 2>/dev/null && zig ar rcs go_engine_windows.a *.o 2>/dev/null && rm -f *.o 2>/dev/null && cd ..
 
 echo "=== Building Zig binaries ==="
 
