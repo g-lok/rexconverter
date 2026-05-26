@@ -51,7 +51,7 @@ env:
   VERSION: ${{ github.ref_name }}
   RELEASES_DIR: build/releases
   REX_SDK_DIR: /tmp/rexlibs
-  MISE_DATA_DIR: ${{ runner.temp }}/mise
+  # MISE_DATA_DIR defined at job level
 
 permissions:
   contents: write
@@ -60,6 +60,8 @@ permissions:
 jobs:
   build-and-release:
     runs-on: macos-latest
+    env:
+      MISE_DATA_DIR: ${{ runner.temp }}/mise
 
     steps:
       # ── Checkout ────────────────────────────────────────────────

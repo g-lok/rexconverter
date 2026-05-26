@@ -32,12 +32,13 @@ on:
     branches: [main]
 
 env:
-  # Tell mise to create shims in ~/.local/share/mise/shims
-  MISE_DATA_DIR: ${{ runner.temp }}/mise
+  # (MISE_DATA_DIR defined at job level)
 
 jobs:
   build-and-test:
     runs-on: macos-latest
+    env:
+      MISE_DATA_DIR: ${{ runner.temp }}/mise
 
     steps:
       # ── Checkout ────────────────────────────────────────────────
