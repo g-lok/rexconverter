@@ -31,8 +31,7 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  # mise uses default data dir (~/.local/share/mise) on CI runners
+# mise uses default data dir (~/.local/share/mise) on CI runners
 
 jobs:
   build-and-test:
@@ -61,11 +60,12 @@ jobs:
             internal/rexengine/libs/macos
           key: rex-sdk-macos-${{ hashFiles('.github/workflows/ci.yml') }}
 
-      - name: Decode REX SDK macOS secret
+      - name: Decrypt REX SDK macOS secret
         if: steps.cache-rex-macos.outputs.cache-hit != 'true'
         run: |
           mkdir -p "internal/rexengine/libs/macos"
-          echo "${{ secrets.REX_SDK_MACOS }}" | base64 -d -o /tmp/rex-sdk-macos.tar.gz
+          gpg --decrypt --batch --passphrase "${{ secrets.REX_SDK_PASSWORD }}" \
+            --output /tmp/rex-sdk-macos.tar.gz .github/workflows/secrets/rex-sdk-macos.tar.gz.gpg
           tar xzf /tmp/rex-sdk-macos.tar.gz \
             -C "internal/rexengine/libs/macos"
           # Verify framework was extracted
