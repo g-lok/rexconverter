@@ -27,6 +27,7 @@ description = "Build macOS universal + Windows x86_64 release archives in build/
 run = """
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 RELEASES_DIR="build/releases"
+REX_SDK="/tmp/rexlibs"
 mkdir -p "$RELEASES_DIR"
 LDFLAGS="-X github.com/g-lok/rexconverter/cmd.version=$VERSION"
 
@@ -63,6 +64,10 @@ zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe "-Dversion=$VERSION
 
 echo "=== Packaging macOS release ==="
 
+# Stage REX SDK framework for packaging
+rm -rf build/Frameworks
+cp -r "$REX_SDK/REXSDK_Mac_1.9.2/Mac/Deployment/REX Shared Library.framework" build/Frameworks/
+
 # Create universal binary
 lipo -create \
   build/zig-out-x86/bin/rexconverter \
@@ -81,8 +86,8 @@ echo "=== Packaging Windows release ==="
 WIN_DIR="$RELEASES_DIR/rexconverter-$VERSION-windows"
 mkdir -p "$WIN_DIR"
 cp "build/zig-out-win/bin/rexconverter.exe" "$WIN_DIR/"
-cp "rexlibs/REXSDK_Win_1.9.2/Win/x64/Deployment/REX Shared Library.dll" "$WIN_DIR/"
-cp "rexlibs/REXSDK_Win_1.9.2/Win/x64/Deployment/REX Shared Library.lib" "$WIN_DIR/"
+cp "$REX_SDK/REXSDK_Win_1.9.2/Win/x64/Deployment/REX Shared Library.dll" "$WIN_DIR/"
+cp "$REX_SDK/REXSDK_Win_1.9.2/Win/x64/Deployment/REX Shared Library.lib" "$WIN_DIR/"
 cd "$RELEASES_DIR" && zip -r "rexconverter-$VERSION-windows.zip" "rexconverter-$VERSION-windows" && cd ../..
 
 echo "=== Cleanup ==="
