@@ -148,7 +148,7 @@ jobs:
           codesign --force --sign - --options runtime \
             "$DIRNAME/rexconverter"
           codesign --force --sign - --options runtime \
-            "$DIRNAME/Frameworks/REX Shared Library.framework"
+            "$DIRNAME/Frameworks/REX Shared Library.framework/Versions/A/REX Shared Library"
           rm -f "$MACOS_TARBALL"
           tar czf "$MACOS_TARBALL" "$DIRNAME"
           rm -rf "$DIRNAME"
