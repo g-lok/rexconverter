@@ -66,7 +66,7 @@ mise run build
 zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
 ```
 
-The REX SDK must be downloaded separately from Reason Studios:
+The REX SDK must be [downloaded separately from Reason Studios](https://developer.reasonstudios.com/downloads/other-products):
 - **macOS**: Place `REX Shared Library.framework` in `internal/rexengine/libs/macos/`
 - **Windows**: Place `REX Shared Library.dll` alongside the built binary
 
