@@ -1,0 +1,53 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+rexconverter
+*.test
+
+# Build artifacts
+build/
+.zig-cache/
+
+# Generated Go archive (from Go c-archive build step)
+go_engine.a
+go_engine.h
+
+# REX SDK full archive (not needed in repo; users download separately)
+rexlibs/
+
+# Test run artifacts
+tests/var/
+
+# Track test source and reference files explicitly (not gitignored by default)
+# Source files: .rx2/.rex/.rcy, Reference files: .txt/.wav
+!tests/testdata/*.rx2
+!tests/testdata/*.rex
+!tests/testdata/*.rcy
+!tests/testdata/*.txt
+
+# Agent/IDE config
+.opencode/
+.agents/
+.jj/
+.learnings/
+.idea/
+.vscode/
+
+# Test audio files (tracked .rx2/.rex/.rcy in tests/testdata/)
+# Do NOT use *.wav here — test reference WAVs need to be tracked
+
+# Code coverage
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go workspace
+go.work
+go.work.sum
+
+# env file
+.env
