@@ -17,7 +17,7 @@ mise run build  →  zig build (orchestrates Go → Zig link)
 
 | Layer | Role | Key Files |
 |-------|------|-----------|
-| **Zig** | Main executable. Calls REX SDK via `@cImport`. Exports functions for Go to call. | `internal/rexengine/extractor.zig` |
+| **Zig** | Main executable. Calls REX SDK via `b.addTranslateC()` (build-time C→Zig translation). Exports functions for Go to call. | `internal/rexengine/extractor.zig` |
 | **Go** | CLI (cobra), file I/O, WAV encoding, cue marker calculation. Compiled as c-archive. | `main.go`, `cmd/root.go`, `internal/rexengine/` |
 | **REX SDK** | Proprietary C library from Reason Studios for reading/rendering REX files. | `internal/rexengine/REX.h`, `internal/rexengine/libs/macos/` |
 
@@ -41,8 +41,7 @@ REX file bytes
 ├── internal/rexengine/
 │   ├── bridge.go            # CGo bridge: calls Zig exported functions
 │   ├── encoder.go           # Manual WAV encoder (no external libs)
-│   ├── extractor.zig        # REX SDK interface (Zig)
-│   ├── processor.go         # Legacy slice partitioning
+│   ├── extractor.zig        # REX SDK interface via translate-c (Zig)
 │   ├── runner.go            # Pipeline orchestrator
 │   ├── types.go             # Go data types
 │   ├── REX.h                # REX SDK C header (patched for MinGW)
@@ -127,7 +126,7 @@ Key test categories:
 - The REX SDK is **not thread-safe** (except `REXRenderPreviewBatch`)
 - `REX.h` is patched at line 84: `#elif defined(__GNUC__)` (was `__GNUC__ && REX_MAC`) for MinGW support
 - Output WAV uses `fmt → data → cue` chunk order, `dwPosition = dwSampleOffset` (sample offset, not byte offset), `dwChunkStart = 0`
-- The `@cImport` in `extractor.zig` is deprecated in Zig 0.16.0 but still compiles
+- `REX.h` is translated via `b.addTranslateC()` in `build.zig` with target-specific `defineCMacro` calls for `REX_MAC`/`REX_WINDOWS`
 
 ## REX SDK License
 

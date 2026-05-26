@@ -1,0 +1,203 @@
+# -------------------------------------------------------------------
+# Release — rexconverter
+# -------------------------------------------------------------------
+# Triggered by pushing a tag matching v*.  Builds macOS universal +
+# Windows x86_64 release archives, signs the macOS binary (ad-hoc),
+# and uploads everything to a GitHub Release.
+#
+# ── Prerequisites: REX SDK secrets ────────────────────────────────
+# The REX SDK is proprietary.  Create these secrets in your repo:
+#
+#   REX_SDK_MACOS   — base64 tarball of "REX Shared Library.framework"
+#   REX_SDK_WINDOWS — base64 tarball of Windows DLLs + .lib
+#
+#   macOS:
+#     cd /path/to/REXSDK_Mac_1.9.2/Mac/Deployment
+#     tar czf rex-sdk-macos.tar.gz "REX Shared Library.framework"
+#     base64 -i rex-sdk-macos.tar.gz | pbcopy
+#
+#   Windows:
+#     cd /path/to/REXSDK_Win_1.9.2/Win/x64/Deployment
+#     tar czf rex-sdk-windows.tar.gz \
+#       "REX Shared Library.dll" "REX Shared Library.lib"
+#     base64 -i rex-sdk-windows.tar.gz | pbcopy
+#
+# ── Code Signing ──────────────────────────────────────────────────
+# Currently uses ad-hoc signing ("-" identity).  For production:
+#   1. Obtain an Apple Developer ID Application certificate
+#   2. Set secrets:
+#        MACOS_CERT_B64   — base64 of .p12 certificate
+#        MACOS_CERT_PASS  — certificate password
+#        KEYCHAIN_PASS    — temporary keychain password
+#   3. Uncomment the certificate import and update codesign identity
+#
+# ── Notarization (optional) ───────────────────────────────────────
+# After signing, submit to Apple for notarization:
+#   xcrun notarytool submit build/releases/*.tar.gz \
+#     --apple-id "${{ secrets.APPLE_ID }}" \
+#     --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+#     --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+#     --wait
+#   xcrun stapler staple build/releases/*.tar.gz
+# -------------------------------------------------------------------
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  VERSION: ${{ github.ref_name }}
+  RELEASES_DIR: build/releases
+  REX_SDK_DIR: /tmp/rexlibs
+  MISE_DATA_DIR: ${{ runner.temp }}/mise
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # ── Install mise (toolchain: Go + Zig) ──────────────────────
+      - name: Install mise
+        run: |
+          curl -sSL https://mise.run | sh
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+          mise install
+
+      # ── Tool versions ───────────────────────────────────────────
+      - name: Show tool versions
+        run: |
+          go version
+          zig version
+          mise --version 2>/dev/null || true
+
+      # ── Restore REX SDK macOS framework ─────────────────────────
+      # Staged at $REX_SDK_DIR/REXSDK_Mac_1.9.2/Mac/Deployment/…
+      # matching the path used by `mise run build-releases`.
+      - name: Decode REX SDK macOS
+        run: |
+          mkdir -p "$REX_SDK_DIR/REXSDK_Mac_1.9.2/Mac/Deployment"
+          echo "${{ secrets.REX_SDK_MACOS }}" | base64 -d -o /tmp/rex-sdk-macos.tar.gz
+          tar xzf /tmp/rex-sdk-macos.tar.gz \
+            -C "$REX_SDK_DIR/REXSDK_Mac_1.9.2/Mac/Deployment"
+          rm -f /tmp/rex-sdk-macos.tar.gz
+
+      # ── Restore REX SDK Windows DLLs ────────────────────────────
+      - name: Decode REX SDK Windows
+        run: |
+          mkdir -p "$REX_SDK_DIR/REXSDK_Win_1.9.2/Win/x64/Deployment"
+          echo "${{ secrets.REX_SDK_WINDOWS }}" | base64 -d -o /tmp/rex-sdk-windows.tar.gz
+          tar xzf /tmp/rex-sdk-windows.tar.gz \
+            -C "$REX_SDK_DIR/REXSDK_Win_1.9.2/Win/x64/Deployment"
+          rm -f /tmp/rex-sdk-windows.tar.gz
+
+      # ── Cache Go modules ────────────────────────────────────────
+      - name: Cache Go modules
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/Library/Caches/go
+          key: ${{ runner.os }}-go-release-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-release-
+
+      # ── Cache Zig artifacts ─────────────────────────────────────
+      - name: Cache Zig global cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cache/zig
+            ~/Library/Caches/zig
+          key: ${{ runner.os }}-zig-release-${{ hashFiles('**/build.zig', '**/*.zig') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-release-
+
+      # ── Build release archives ──────────────────────────────────
+      - name: Build releases (macOS universal + Windows x86_64)
+        run: mise run build-releases
+        env:
+          CGO_LDFLAGS_ALLOW: "-Wl,-rpath,@executable_path"
+
+      # ── Codesign macOS binary (ad-hoc) ──────────────────────────
+      # Production: replace "-" with "Developer ID Application: …"
+      # and import the signing certificate from secrets.
+      - name: Codesign (ad-hoc) macOS binary
+        run: |
+          VERSION="${{ env.VERSION }}"
+          RELEASES="${{ env.RELEASES_DIR }}"
+          # mise run build-releases names the artifact using git describe.
+          # Derive the actual directory name from the tarball.
+          cd "$RELEASES"
+          MACOS_TARBALL="$(ls rexconverter-*-macos.tar.gz | head -1)"
+          DIRNAME="${MACOS_TARBALL%.tar.gz}"
+
+          tar xzf "$MACOS_TARBALL"
+          codesign --force --sign - --options runtime \
+            "$DIRNAME/rexconverter"
+          codesign --force --sign - --options runtime \
+            "$DIRNAME/Frameworks/REX Shared Library.framework"
+          rm -f "$MACOS_TARBALL"
+          tar czf "$MACOS_TARBALL" "$DIRNAME"
+          rm -rf "$DIRNAME"
+          cd "$OLDPWD"
+
+      # ── SHA256 checksums ────────────────────────────────────────
+      - name: Compute SHA256 checksums
+        id: checksums
+        run: |
+          cd "${{ env.RELEASES_DIR }}"
+          for f in *.tar.gz *.zip; do
+            sha256sum "$f" >> CHECKSUMS.txt
+          done
+          echo "### Checksums" >> "$GITHUB_STEP_SUMMARY"
+          cat CHECKSUMS.txt >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "CHECKSUMS<<HEREDOC_MARKER"
+            cat CHECKSUMS.txt
+            echo "HEREDOC_MARKER"
+          } >> "$GITHUB_OUTPUT"
+
+      # ── List artifacts ──────────────────────────────────────────
+      - name: List release artifacts
+        run: ls -lh "${{ env.RELEASES_DIR }}/"
+
+      # ── Create GitHub Release ───────────────────────────────────
+      - name: Create Release
+        uses: softprops/action-gh-release@c95fe1489396fe8a9eb07c2cc84118a594f7f7d4 # v2.2.1
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: rexconverter ${{ env.VERSION }}
+          tag_name: ${{ env.VERSION }}
+          body: |
+            ## rexconverter ${{ env.VERSION }}
+
+            ### SHA256 Checksums
+
+            ```
+            ${{ steps.checksums.outputs.CHECKSUMS }}
+            ```
+
+            **Notes:**
+            - REX SDK framework (macOS) and DLL (Windows) are bundled in the archives.
+            - The macOS binary is ad-hoc signed. Apple Silicon users may need:
+              `xattr -d com.apple.quarantine rexconverter`
+            - See the [README](https://github.com/${{ github.repository }}) for usage.
+          files: |
+            ${{ env.RELEASES_DIR }}/*.tar.gz
+            ${{ env.RELEASES_DIR }}/*.zip
+            ${{ env.RELEASES_DIR }}/CHECKSUMS.txt
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

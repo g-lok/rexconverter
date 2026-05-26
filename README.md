@@ -1,5 +1,7 @@
 # rexconverter
 
+[![CI](https://github.com/g-lok/rexconverter/actions/workflows/ci.yml/badge.svg)](https://github.com/g-lok/rexconverter/actions/workflows/ci.yml)
+
 Convert Reason Studios ReCycle (.rex, .rx2) files to cued WAV files for Dirtywave M8 and DAWs.
 
 ## Features
@@ -52,17 +54,19 @@ Keep `REX Shared Library.dll` alongside `rexconverter.exe`.
 
 ### Build from Source
 
-Requires Go 1.26+, Zig 0.16.0+, and the REX SDK v1.9.2.
+Requires Go 1.26+, **Zig 0.16.0+**, and the REX SDK v1.9.2.
+
+The recommended approach is `mise run build`, which handles the Go → Zig archive linking automatically:
 
 ```bash
 # Install dependencies
 mise install
 # or install Go + Zig manually
 
-# Build
+# Build (recommended)
 mise run build
 
-# Or manually
+# Or manually (requires Zig 0.16.0+)
 zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
 ```
 
@@ -138,6 +142,43 @@ on macOS, `REX Shared Library.dll` on Windows) for end-user convenience. These b
 remain proprietary Reason Studios property and are not subject to the MIT license.
 
 See `REX_SDK_LICENSE.txt` and `NOTICE.md` for full license terms and attribution.
+
+## SHA256 Verification
+
+Release artifacts include SHA256 checksums. Verify before use:
+
+```bash
+# macOS
+shasum -a 256 rexconverter-<version>-macos.tar.gz
+
+# Windows
+shasum -a 256 rexconverter-<version>-windows.zip
+```
+
+### Homebrew / Scoop / Chocolatey
+
+These package managers require the SHA256 hash of the release archive:
+
+1. Download the release archive from GitHub Releases
+2. Run: `shasum -a 256 rexconverter-<version>-macos.tar.gz` (or `.zip` for Windows)
+3. Use the output hash in:
+   - **Homebrew formula**: `sha256 "..."` in the `on_macos do` block
+   - **Scoop manifest**: `"hash": "..."` under `architecture.64bit`
+   - **Chocolatey**: Add `checksum type="sha256"` to the chocolateyInstall.ps1
+
+The GitHub Release workflow outputs checksums automatically.
+
+## Contributing
+
+See [`AGENTS.md`](AGENTS.md) for the contributor guide, architecture overview, and build instructions.
+
+All contributions must pass the full test suite before merging:
+
+```bash
+go test ./tests/...
+```
+
+CI runs on every push. Ensure your changes maintain compatibility with Zig 0.16.0+ and Go 1.26+.
 
 ## License
 
