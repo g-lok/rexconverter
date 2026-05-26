@@ -9,6 +9,8 @@ mkdir -p build && \
 VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)" && \
 zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe "-Dversion=$VERSION" && \
 cp zig-out/bin/rexconverter build/rexconverter && chmod +x build/rexconverter && \
+rm -rf build/Frameworks && mkdir -p build/Frameworks && \
+cp -r "internal/rexengine/libs/macos/REX Shared Library.framework" build/Frameworks/ && \
 install_name_tool -change "@loader_path/../Frameworks/REX Shared Library.framework/Versions/A/REX Shared Library" "@executable_path/Frameworks/REX Shared Library.framework/Versions/A/REX Shared Library" build/rexconverter && \
 rm -rf zig-out zig-cache internal/rexengine/go_engine.a internal/rexengine/go_engine.h
 """
