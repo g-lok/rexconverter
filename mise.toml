@@ -77,6 +77,8 @@ lipo -create \
   build/zig-out-arm64/bin/rexconverter \
   -output "$RELEASES_DIR/rexconverter-macos-universal"
 
+install_name_tool -change "@loader_path/../Frameworks/REX Shared Library.framework/Versions/A/REX Shared Library" "@executable_path/Frameworks/REX Shared Library.framework/Versions/A/REX Shared Library" "$RELEASES_DIR/rexconverter-macos-universal"
+
 # Build release directory
 MACOS_DIR="$RELEASES_DIR/rexconverter-$VERSION-macos"
 mkdir -p "$MACOS_DIR"
