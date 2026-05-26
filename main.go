@@ -9,5 +9,5 @@ func GoMainEntry() {
 }
 
 func main() {
-	// Keep empty. The execution lifecycle is managed by our entry wrapper token function.
+	// main is empty — Zig entrypoint calls GoMainEntry() via c-archive.
 }

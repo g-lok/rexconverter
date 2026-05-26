@@ -168,3 +168,45 @@ scoop install rexconverter
 - [ ] Update Homebrew formula SHA256
 - [ ] Update Scoop manifest SHA256
 - [ ] Push both tap/bucket repos
+
+---
+
+## 6. Future Development
+
+### 6.1 REXRenderSlice Fast Path (no tempo override)
+
+When `--tempo` is not specified, skip `REXStartPreview`/`REXStopPreview` and use `REXRenderSlice` per-slice instead:
+
+**Why**: Simpler lifecycle, no preview flush quirk, potentially faster init for large files.
+
+**Caveat**: Verify PCM output matches `REXRenderPreviewBatch` exactly for non-tempo case. The two paths may use different internal rendering algorithms — need a dedicated test comparing both outputs sample-by-sample.
+
+**Changes needed**:
+- New Zig export `Zig_RenderSlicesDirect()` or param flag on `Zig_RenderSlicesPreview`
+- No preview lifecycle (`REXStartPreview`/`REXStopPreview`/flush)
+- Returns deinterleaved PCM per-slice (SDK-native format), interleaved in Zig
+- Go bridge stays same — just calls different Zig function based on `cfg.Tempo == 0`
+
+### 6.2 Framework Staging in Build Pipeline
+
+Currently `install_name_tool` patches the rpath, but `build/Frameworks/` must be created manually. Add a build step (mise or Zig) that copies the framework from `internal/rexengine/libs/macos/` so `mise run build` produces a directly runnable binary.
+
+**Changes needed**:
+- Add copy step in `mise.toml` or `build.zig`:
+  ```bash
+  mkdir -p build/Frameworks && cp -R internal/rexengine/libs/macos/ build/Frameworks/
+  ```
+
+### 6.3 [DONE] Migrated from `@cImport` to `b.addTranslateC()`
+
+`@cImport` was replaced with `b.addTranslateC()` in `build.zig` using `defineCMacro` for
+platform-specific flags. `@memcpy` replaced with `std.mem.copyForwards` (new 0.16.0 name).
+`extractor.zig` now imports the translated module as `const c = @import("rex_c");`.
+
+### 6.4 Full-File PCM Reference Tests
+
+Add a test comparing rendered output against a clean source WAV (not just SDK reference `Slice_*.txt` files). This would validate that the loop render doesn't introduce artifacts like gaps, overlaps, or incorrect ordering across slice boundaries.
+
+### 6.5 Creator Info Metadata
+
+The Zig code never calls `c.REXGetCreatorInfo()`, so `CreatorName` and `Copyright` are always empty. Wire it through for files that contain this metadata (RCY files from Reason, some REX2 from ReCycle).

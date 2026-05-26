@@ -1,0 +1,120 @@
+# -------------------------------------------------------------------
+# CI — rexconverter
+# -------------------------------------------------------------------
+# Runs on every push/PR to main.  Builds the binary and runs the full
+# Go test suite.  The REX SDK is proprietary — see README section
+# "Setting up the REX SDK" for how to create the required secrets.
+#
+# ── Secrets ───────────────────────────────────────────────────────
+#
+#   REX_SDK_MACOS  — base64-encoded tarball containing
+#                    "REX Shared Library.framework"
+#
+#   How to create it (run on a macOS host that already has the SDK):
+#
+#       tar czf rex-sdk-macos.tar.gz \
+#         -C /path/to/REXSDK_Mac_1.9.2/Mac/Deployment \
+#         "REX Shared Library.framework"
+#       base64 -i rex-sdk-macos.tar.gz | pbcopy
+#       # Paste into https://github.com/…/settings/secrets/actions
+#       # as REX_SDK_MACOS
+#
+# ── Caching ───────────────────────────────────────────────────────
+# Go module cache and Zig cache are saved/restored per branch to
+# prevent cache-poisoning across PRs.
+# -------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # Tell mise to create shims in ~/.local/share/mise/shims
+  MISE_DATA_DIR: ${{ runner.temp }}/mise
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0   # needed for `git describe` in version string
+
+      # ── Install mise (toolchain: Go + Zig) ──────────────────────
+      - name: Install mise
+        run: |
+          curl -sSL https://mise.run | sh
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+          mise install  # installs Go + Zig per mise.toml
+        shell: bash
+
+      # ── Restore REX SDK (macOS framework) ───────────────────────
+      - name: Restore REX SDK from cache (macOS)
+        id: cache-rex-macos
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            internal/rexengine/libs/macos
+          key: rex-sdk-macos-${{ hashFiles('.github/workflows/ci.yml') }}
+
+      - name: Decode REX SDK macOS secret
+        if: steps.cache-rex-macos.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "internal/rexengine/libs/macos"
+          echo "${{ secrets.REX_SDK_MACOS }}" | base64 -d -o /tmp/rex-sdk-macos.tar.gz
+          tar xzf /tmp/rex-sdk-macos.tar.gz \
+            -C "internal/rexengine/libs/macos"
+          # Verify framework was extracted
+          ls -ld "internal/rexengine/libs/macos/REX Shared Library.framework" >/dev/null
+          rm -f /tmp/rex-sdk-macos.tar.gz
+        shell: bash
+
+      # ── Cache Go modules ────────────────────────────────────────
+      - name: Cache Go modules
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/Library/Caches/go
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      # ── Cache Zig artifacts ─────────────────────────────────────
+      - name: Cache Zig global cache
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cache/zig
+            ~/Library/Caches/zig
+          key: ${{ runner.os }}-zig-${{ hashFiles('**/build.zig', '**/*.zig') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
+      # ── Show tool versions ──────────────────────────────────────
+      - name: Show tool versions
+        run: |
+          go version
+          zig version
+          echo "mise: $(mise --version 2>/dev/null || true)"
+        shell: bash
+
+      # ── Build ───────────────────────────────────────────────────
+      - name: Build
+        run: mise run build
+        shell: bash
+        env:
+          CGO_LDFLAGS_ALLOW: "-Wl,-rpath,@executable_path"
+
+      # ── Test ────────────────────────────────────────────────────
+      - name: Run tests
+        run: go test ./tests/... -v
+        shell: bash
+        env:
+          CGO_LDFLAGS_ALLOW: "-Wl,-rpath,@executable_path"

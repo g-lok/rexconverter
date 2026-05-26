@@ -8,10 +8,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Version is set at build time via -ldflags -X
+// Set at build time via -ldflags -X
 var version = "dev"
 
-// Global CLI Configuration Variables
 var (
 	inputFiles      []string
 	inputDir        string
@@ -38,7 +37,6 @@ into multi-slice WAV containers embedded with native RIFF cue markers. Supports
 in-memory streaming, concurrency optimization, and sampler hardware formatting.`,
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// 1. Resolve and validate input routing
 		hasFlagInputs := len(inputFiles) > 0
 		hasPositionalInputs := len(args) > 0
 		hasDirInput := inputDir != ""
@@ -54,7 +52,6 @@ in-memory streaming, concurrency optimization, and sampler hardware formatting.`
 			return fmt.Errorf("error: missing input targets. Provide positional args, --input-file, or --input-dir")
 		}
 
-		// 2. Validate output path targets
 		if outputFile != "" && outputDir != "" {
 			return fmt.Errorf("error: cannot combine --output-file with --output-dir")
 		}
@@ -66,7 +63,6 @@ in-memory streaming, concurrency optimization, and sampler hardware formatting.`
 			}
 		}
 
-		// 3. Validate context flags
 		if recursive && !hasDirInput {
 			return fmt.Errorf("error: --recursive requires --input-dir")
 		}
@@ -79,7 +75,6 @@ in-memory streaming, concurrency optimization, and sampler hardware formatting.`
 			return fmt.Errorf("error: --normalize-splits requires --slice-limit")
 		}
 
-		// 4. Validate bit rate options
 		if bitRate != 0 && bitRate != 8 && bitRate != 16 && bitRate != 24 {
 			return fmt.Errorf("error: unsupported bit-rate %d. Supported: 8, 16, or 24", bitRate)
 		}
@@ -88,13 +83,11 @@ in-memory streaming, concurrency optimization, and sampler hardware formatting.`
 			inputFiles = append(inputFiles, args...)
 		}
 
-		// 5. Initialize REX SDK
 		if err := rexengine.InitEngine(verbose); err != nil {
-			return fmt.Errorf("failed to initialize REX framework: %w", err)
+			return fmt.Errorf("failed to initialize REX SDK: %w", err)
 		}
 		defer rexengine.CloseEngine()
 
-		// 6. Map config to pipeline
 		pipelineConfig := rexengine.PipelineConfig{
 			InputFiles:      inputFiles,
 			InputDir:        inputDir,

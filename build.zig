@@ -55,6 +55,22 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // Translate REX.h for Zig (replaces deprecated @cImport)
+    const rex_c = b.addTranslateC(.{
+        .root_source_file = b.path("internal/rexengine/REX.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    if (target.result.os.tag == .windows) {
+        rex_c.defineCMacro("REX_WINDOWS", "1");
+        rex_c.defineCMacro("REX_MAC", "0");
+    } else {
+        rex_c.defineCMacro("REX_MAC", "1");
+        rex_c.defineCMacro("REX_WINDOWS", "0");
+    }
+    root_module.addImport("rex_c", rex_c.createModule());
+
     // --- Executable ---
     var exe = b.addExecutable(.{
         .name = "rexconverter",
@@ -76,7 +92,7 @@ pub fn build(b: *std.Build) void {
         @panic("unsupported target OS (must be macOS or Windows)");
     }
 
-    // Include path for REX.h (needed by REX.c on Windows and Zig @cImport)
+    // Include path for REX.h (needed by REX.c on Windows)
     exe.root_module.addIncludePath(b.path("internal/rexengine"));
 
     // Link the Go static archive

@@ -7,10 +7,11 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 )
 
-// runPipeline acts as the central router orchestrating the data flow
 func runPipeline(cfg PipelineConfig) error {
 	stat, _ := os.Stdin.Stat()
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
@@ -23,23 +24,46 @@ func runPipeline(cfg PipelineConfig) error {
 
 	var targets []string
 	if cfg.InputDir != "" {
-		discovered, err := scanDirectory(cfg.InputDir, cfg.Recursive)
+		var err error
+		targets, err = scanDirectory(cfg.InputDir, cfg.Recursive)
 		if err != nil {
 			return err
 		}
-		targets = discovered
 	} else {
 		targets = cfg.InputFiles
 	}
 
+	if len(targets) == 0 {
+		return nil
+	}
+
+	var mu sync.Mutex
+	numWorkers := runtime.NumCPU()
+	guard := make(chan struct{}, numWorkers)
+	errCh := make(chan error, len(targets))
+
 	for _, target := range targets {
-		data, err := os.ReadFile(target)
-		if err != nil {
-			fmt.Printf("Warning: Skipping unreadable target %s: %v\n", target, err)
-			continue
-		}
-		if err := processFileBuffer(data, target, cfg); err != nil {
-			fmt.Printf("Error processing %s: %v\n", target, err)
+		go func(t string) {
+			guard <- struct{}{}
+			defer func() { <-guard }()
+
+			data, err := os.ReadFile(t)
+			if err != nil {
+				errCh <- fmt.Errorf("skipping unreadable target %s: %v", t, err)
+				return
+			}
+
+			mu.Lock()
+			err = processFileBuffer(data, t, cfg)
+			mu.Unlock()
+
+			errCh <- err
+		}(target)
+	}
+
+	for range targets {
+		if err := <-errCh; err != nil {
+			fmt.Printf("Error: %v\n", err)
 		}
 	}
 
@@ -47,28 +71,35 @@ func runPipeline(cfg PipelineConfig) error {
 }
 
 func processFileBuffer(fileData []byte, sourcePath string, cfg PipelineConfig) error {
-	// Convert CLI BPM to SDK format (BPM * 1000)
 	sdkTempo := 0
 	if cfg.Tempo > 0 {
 		sdkTempo = cfg.Tempo * 1000
 	}
 
-	chunk, err := RenderLoopPreview(fileData, cfg.SampleRate, sdkTempo)
+	slices, err := RenderSlicesPreview(fileData, cfg.SampleRate, sdkTempo)
 	if err != nil {
-		return fmt.Errorf("loop render failed: %w", err)
+		return fmt.Errorf("slices render failed: %w", err)
 	}
 
-	if cfg.Mono && chunk.Metadata.Channels == 2 {
-		chunk.Interleaved = downmixStereoToMono(chunk.Interleaved)
-		chunk.TotalFrames = len(chunk.Interleaved)
-		chunk.Metadata.Channels = 1
+	if len(slices) == 0 {
+		return nil
 	}
 
+	// Apply mono downmix per-slice
+	if cfg.Mono && slices[0].Metadata.Channels == 2 {
+		for i := range slices {
+			slices[i].Interleaved = downmixStereoToMono(slices[i].Interleaved)
+			slices[i].TotalFrames = len(slices[i].Interleaved)
+		}
+		slices[0].Metadata.Channels = 1
+	}
+
+	// Build output chunks: group slices or concatenate into single file
 	var chunks []SliceExtraction
 	if cfg.SliceLimit > 0 {
-		chunks = splitLoopAtCues(chunk, cfg.SliceLimit, cfg.NormalizeSplits)
+		chunks = groupSlices(slices, cfg.SliceLimit, cfg.NormalizeSplits)
 	} else {
-		chunks = []SliceExtraction{*chunk}
+		chunks = buildSingleOutput(slices)
 	}
 
 	totalFiles := len(chunks)
@@ -78,162 +109,206 @@ func processFileBuffer(fileData []byte, sourcePath string, cfg PipelineConfig) e
 	}
 	postfixFormat := fmt.Sprintf("_%%0%dd.wav", digitWidth)
 
+	var wg sync.WaitGroup
+	errCh := make(chan error, totalFiles)
+
 	for idx, c := range chunks {
-		var finalPath string
+		wg.Add(1)
+		go func(idx int, c SliceExtraction) {
+			defer wg.Done()
+			finalPath := outputPath(sourcePath, cfg, idx, totalFiles, postfixFormat)
 
-		if sourcePath == "stdin" {
-			outName := "output"
-			if cfg.OutputFile != "" {
-				outName = strings.TrimSuffix(cfg.OutputFile, ".wav")
-			}
-			if totalFiles > 1 {
-				finalPath = fmt.Sprintf(outName+postfixFormat, idx+1)
-			} else {
-				finalPath = outName + ".wav"
-			}
-		} else {
-			baseName := strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath))
-			if cfg.OutputFile != "" {
-				baseName = strings.TrimSuffix(cfg.OutputFile, ".wav")
+			outDir := filepath.Dir(finalPath)
+			if outDir != "." && outDir != "" {
+				_ = os.MkdirAll(outDir, 0o755)
 			}
 
-			var nameWithExt string
-			if totalFiles > 1 {
-				nameWithExt = fmt.Sprintf(baseName+postfixFormat, idx+1)
-			} else {
-				nameWithExt = baseName + ".wav"
+			outFile, err := os.Create(finalPath)
+			if err != nil {
+				errCh <- fmt.Errorf("failed creating output file %s: %w", finalPath, err)
+				return
+			}
+			defer outFile.Close()
+
+			if !cfg.Quiet {
+				fmt.Printf("Converting: %s -> %s | Slices: %d | Channels: %d | Rate: %dHz | Tempo: %.1f BPM\n",
+					filepath.Base(sourcePath), filepath.Base(finalPath), len(c.CuePoints),
+					c.Metadata.Channels, c.Metadata.SampleRate, c.Metadata.OriginalTempo)
 			}
 
-			if cfg.OutputDir != "" {
-				if cfg.Preserve && cfg.InputDir != "" {
-					relDir, err := filepath.Rel(cfg.InputDir, filepath.Dir(sourcePath))
-					if err == nil && relDir != "." {
-						finalPath = filepath.Join(cfg.OutputDir, relDir, filepath.Base(nameWithExt))
-					} else {
-						finalPath = filepath.Join(cfg.OutputDir, filepath.Base(nameWithExt))
-					}
-				} else {
-					finalPath = filepath.Join(cfg.OutputDir, filepath.Base(nameWithExt))
-				}
-			} else {
-				finalPath = nameWithExt
+			if err := EncodeWavContainer(outFile, &c, cfg.BitRate); err != nil {
+				errCh <- fmt.Errorf("failed encoding container for %s: %w", finalPath, err)
 			}
-		}
+		}(idx, c)
+	}
 
-		outDir := filepath.Dir(finalPath)
-		if outDir != "." && outDir != "" {
-			_ = os.MkdirAll(outDir, 0o755)
-		}
+	wg.Wait()
+	close(errCh)
 
-		outFile, err := os.Create(finalPath)
-		if err != nil {
-			return fmt.Errorf("failed creating output file %s: %w", finalPath, err)
-		}
-
-		if !cfg.Quiet {
-			fmt.Printf("Converting: %s -> %s | Slices: %d | Channels: %d | Rate: %dHz | Tempo: %.1f BPM\n",
-				filepath.Base(sourcePath), filepath.Base(finalPath), len(c.CuePoints),
-				c.Metadata.Channels, c.Metadata.SampleRate, c.Metadata.OriginalTempo)
-		}
-
-		err = EncodeWavContainer(outFile, &c, cfg.BitRate)
-		outFile.Close()
-		if err != nil {
-			return fmt.Errorf("failed encoding container for %s: %w", finalPath, err)
-		}
+	for err := range errCh {
+		return err
 	}
 
 	return nil
 }
 
-// splitLoopAtCues partitions a loop-rendered SliceExtraction at cue marker
-// boundaries. Each output file gets a contiguous PCM range covering its group of
-// slices, with cue positions rebased to the start of that range.
-func splitLoopAtCues(src *SliceExtraction, maxSlices int, normalize bool) []SliceExtraction {
-	totalSlices := len(src.CuePoints)
-	if totalSlices == 0 || maxSlices <= 0 {
-		return []SliceExtraction{*src}
+// groupSlices groups per-slice data into output files with maxSlices per group.
+func groupSlices(slices []SliceExtraction, maxSlices int, normalize bool) []SliceExtraction {
+	total := len(slices)
+	if total == 0 || maxSlices <= 0 {
+		return buildSingleOutput(slices)
 	}
 
-	// Build partition sizes
-	var partitionSizes []int
-	if normalize && maxSlices > 1 && totalSlices > maxSlices {
-		numFiles := int(math.Ceil(float64(totalSlices) / float64(maxSlices)))
-		baseSize := totalSlices / numFiles
-		remainder := totalSlices % numFiles
+	var groupSizes []int
+	if normalize && maxSlices > 1 && total > maxSlices {
+		numFiles := int(math.Ceil(float64(total) / float64(maxSlices)))
+		baseSize := total / numFiles
+		remainder := total % numFiles
 		for i := 0; i < numFiles; i++ {
 			size := baseSize
 			if i < remainder {
 				size++
 			}
-			partitionSizes = append(partitionSizes, size)
+			groupSizes = append(groupSizes, size)
 		}
 	} else {
-		remaining := totalSlices
+		remaining := total
 		for remaining > 0 {
 			take := maxSlices
 			if remaining < maxSlices {
 				take = remaining
 			}
-			partitionSizes = append(partitionSizes, take)
+			groupSizes = append(groupSizes, take)
 			remaining -= take
 		}
 	}
 
-	ch := src.Metadata.Channels
-	fullPCM := src.Interleaved
+	ch := slices[0].Metadata.Channels
 	var results []SliceExtraction
-	cueIdx := 0
+	sliceIdx := 0
 
-	for _, size := range partitionSizes {
-		startCue := cueIdx
-		endCue := cueIdx + size
-		if endCue > totalSlices {
-			endCue = totalSlices
+	for _, size := range groupSizes {
+		if sliceIdx+size > total {
+			size = total - sliceIdx
 		}
 
-		startFrame := int(src.CuePoints[startCue].Position)
-		var endFrame int
-		if endCue < totalSlices {
-			endFrame = int(src.CuePoints[endCue].Position)
-		} else {
-			endFrame = src.TotalFrames
-		}
-		if endFrame > src.TotalFrames {
-			endFrame = src.TotalFrames
+		totalFrames := 0
+		for j := 0; j < size; j++ {
+			totalFrames += slices[sliceIdx+j].TotalFrames
 		}
 
-		numFrames := endFrame - startFrame
-		pcmRange := make([]float32, numFrames*ch)
-		copy(pcmRange, fullPCM[startFrame*ch:endFrame*ch])
+		pcm := make([]float32, totalFrames*ch)
+		offset := 0
+		for j := 0; j < size; j++ {
+			s := slices[sliceIdx+j]
+			copy(pcm[offset:offset+len(s.Interleaved)], s.Interleaved)
+			offset += len(s.Interleaved)
+		}
 
 		cues := make([]WavCueMarker, size)
-		for i := 0; i < size; i++ {
-			cp := src.CuePoints[startCue+i]
-			cues[i] = WavCueMarker{
-				SliceID:  i,
-				Position: cp.Position - uint32(startFrame),
-				Label:    cp.Label,
+		frameOffset := 0
+		for j := 0; j < size; j++ {
+			cues[j] = WavCueMarker{
+				SliceID:  j,
+				Position: uint32(frameOffset),
+				Label:    fmt.Sprintf("Slice %02d", sliceIdx+j+1),
 			}
+			frameOffset += slices[sliceIdx+j].TotalFrames
 		}
 
 		results = append(results, SliceExtraction{
-			Metadata:    src.Metadata,
+			Metadata:    slices[0].Metadata,
 			CuePoints:   cues,
-			Interleaved: pcmRange,
-			TotalFrames: numFrames,
+			Interleaved: pcm,
+			TotalFrames: totalFrames,
 		})
 
-		cueIdx = endCue
+		sliceIdx += size
 	}
 
 	return results
 }
 
+// buildSingleOutput concatenates all slices into a single SliceExtraction.
+func buildSingleOutput(slices []SliceExtraction) []SliceExtraction {
+	if len(slices) == 0 {
+		return nil
+	}
+	if len(slices) == 1 {
+		return slices
+	}
+
+	ch := slices[0].Metadata.Channels
+	totalFrames := 0
+	for _, s := range slices {
+		totalFrames += s.TotalFrames
+	}
+
+	pcm := make([]float32, totalFrames*ch)
+	cues := make([]WavCueMarker, len(slices))
+	frameOffset := 0
+
+	for i, s := range slices {
+		copy(pcm[frameOffset*ch:], s.Interleaved)
+		cues[i] = WavCueMarker{
+			SliceID:  i,
+			Position: uint32(frameOffset),
+			Label:    fmt.Sprintf("Slice %02d", i+1),
+		}
+		frameOffset += s.TotalFrames
+	}
+
+	return []SliceExtraction{
+		{
+			Metadata:    slices[0].Metadata,
+			CuePoints:   cues,
+			Interleaved: pcm,
+			TotalFrames: totalFrames,
+		},
+	}
+}
+
+func outputPath(sourcePath string, cfg PipelineConfig, idx, totalFiles int, postfixFormat string) string {
+	if sourcePath == "stdin" {
+		outName := "output"
+		if cfg.OutputFile != "" {
+			outName = strings.TrimSuffix(cfg.OutputFile, ".wav")
+		}
+		if totalFiles > 1 {
+			return fmt.Sprintf(outName+postfixFormat, idx+1)
+		}
+		return outName + ".wav"
+	}
+
+	baseName := strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath))
+	if cfg.OutputFile != "" {
+		baseName = strings.TrimSuffix(cfg.OutputFile, ".wav")
+	}
+
+	var nameWithExt string
+	if totalFiles > 1 {
+		nameWithExt = fmt.Sprintf(baseName+postfixFormat, idx+1)
+	} else {
+		nameWithExt = baseName + ".wav"
+	}
+
+	if cfg.OutputDir != "" {
+		if cfg.Preserve && cfg.InputDir != "" {
+			relDir, err := filepath.Rel(cfg.InputDir, filepath.Dir(sourcePath))
+			if err == nil && relDir != "." {
+				return filepath.Join(cfg.OutputDir, relDir, filepath.Base(nameWithExt))
+			}
+			return filepath.Join(cfg.OutputDir, filepath.Base(nameWithExt))
+		}
+		return filepath.Join(cfg.OutputDir, filepath.Base(nameWithExt))
+	}
+
+	return nameWithExt
+}
+
 func downmixStereoToMono(stereoData []float32) []float32 {
 	mono := make([]float32, len(stereoData)/2)
 	for i := 0; i < len(mono); i++ {
-		// Average left and right interleaved samples safely
 		mono[i] = (stereoData[i*2] + stereoData[i*2+1]) / 2.0
 	}
 	return mono
