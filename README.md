@@ -17,10 +17,10 @@ Convert Reason Studios ReCycle (.rex, .rx2) files to cued WAV files for Dirtywav
 
 **Pre-built releases:**
 
-| OS | Architecture |
-|----|-------------|
-| macOS 11+ | Intel (x86_64) and Apple Silicon (arm64) |
-| Windows 10+ | x86_64 |
+| OS          | Architecture                             |
+| ----------- | ---------------------------------------- |
+| macOS 11+   | Intel (x86_64) and Apple Silicon (arm64) |
+| Windows 10+ | x86_64                                   |
 
 **Building from source:** Go 1.26+, Zig 0.16.0+, REX SDK v1.9.2.
 
@@ -38,8 +38,16 @@ rexconverter --input-dir ./rex_files --output-dir ./wav_output
 
 ### macOS
 
-Download the latest `.tar.gz` from [Releases](https://github.com/g-lok/rexconverter/releases).
-The `Frameworks/` folder must be in the same directory as the binary.
+[Homebrew](https://brew.sh/):
+
+```bash
+brew install g-lok/tap/rexconverter
+```
+
+Manually:
+
+1. Download the latest `.tar.gz` from [Releases](https://github.com/g-lok/rexconverter/releases).
+   The `Frameworks/` folder must be in the same directory as the binary.
 
 ```bash
 tar xzf rexconverter-<version>-macos.tar.gz
@@ -48,6 +56,15 @@ cd rexconverter-<version>-macos
 ```
 
 ### Windows
+
+[Scoop](https://scoop.sh/)
+
+```powershell
+scoop bucket add g-lok https://github.com/g-lok/scoop-bucket
+scoop install rexconverter
+```
+
+Manually:
 
 Download the latest `.zip` from [Releases](https://github.com/g-lok/rexconverter/releases).
 Keep `REX Shared Library.dll` alongside `rexconverter.exe`.
@@ -71,6 +88,7 @@ zig build -Dtarget=x86_64-macos -Doptimize=ReleaseSafe
 ```
 
 The REX SDK must be [downloaded separately from Reason Studios](https://developer.reasonstudios.com/downloads/other-products):
+
 - **macOS**: Place `REX Shared Library.framework` in `internal/rexengine/libs/macos/`
 - **Windows**: Place `REX Shared Library.dll` alongside the built binary
 
@@ -80,24 +98,24 @@ The REX SDK must be [downloaded separately from Reason Studios](https://develope
 rexconverter [INPUT_FILES...] [flags]
 ```
 
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--input-file` | `-i` | Target ReCycle input file(s) |
-| `--input-dir` | `-d` | Scan directory for .rex/.rx2 files |
-| `--output-file` | `-o` | Output WAV path (single input only) |
-| `--output-dir` | `-e` | Output directory for batch conversions |
-| `--recursive` | `-r` | Recurse subdirectories (requires --input-dir) |
-| `--preserve` | `-p` | Preserve directory structure in output |
-| `--bit-rate` | `-b` | Bit depth: 8, 16, or 24 |
-| `--sample-rate` | `-s` | Output sample rate in Hz |
-| `--mono` | `-m` | Downmix to mono |
-| `--tempo` | `-t` | Override loop tempo in BPM (0 = original) |
-| `--slice-limit` | `-l` | Max slices per output file |
-| `--normalize-splits` | `-n` | Balance slices evenly across splits |
-| `--quiet` | `-q` | Suppress progress output |
-| `--verbose` | `-v` | Debug output (Zig struct diagnostics) |
-| `--version` | | Print version |
-| `--help` | `-h` | Help |
+| Flag                 | Short | Description                                   |
+| -------------------- | ----- | --------------------------------------------- |
+| `--input-file`       | `-i`  | Target ReCycle input file(s)                  |
+| `--input-dir`        | `-d`  | Scan directory for .rex/.rx2 files            |
+| `--output-file`      | `-o`  | Output WAV path (single input only)           |
+| `--output-dir`       | `-e`  | Output directory for batch conversions        |
+| `--recursive`        | `-r`  | Recurse subdirectories (requires --input-dir) |
+| `--preserve`         | `-p`  | Preserve directory structure in output        |
+| `--bit-rate`         | `-b`  | Bit depth: 8, 16, or 24                       |
+| `--sample-rate`      | `-s`  | Output sample rate in Hz                      |
+| `--mono`             | `-m`  | Downmix to mono                               |
+| `--tempo`            | `-t`  | Override loop tempo in BPM (0 = original)     |
+| `--slice-limit`      | `-l`  | Max slices per output file                    |
+| `--normalize-splits` | `-n`  | Balance slices evenly across splits           |
+| `--quiet`            | `-q`  | Suppress progress output                      |
+| `--verbose`          | `-v`  | Debug output (Zig struct diagnostics)         |
+| `--version`          |       | Print version                                 |
+| `--help`             | `-h`  | Help                                          |
 
 ### Examples
 
