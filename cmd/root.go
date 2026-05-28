@@ -26,6 +26,9 @@ var (
 	quiet           bool
 	preserve        bool
 	verbose         bool
+	outputFormat    string
+	noSlices        bool
+	monoMode        string
 )
 
 var rootCmd = &cobra.Command{
@@ -103,6 +106,9 @@ in-memory streaming, concurrency optimization, and sampler hardware formatting.`
 			Quiet:           quiet,
 			Preserve:        preserve,
 			Verbose:         verbose,
+			Format:          outputFormat,
+			NoSlices:        noSlices,
+			MonoMode:        monoMode,
 		}
 
 		return rexengine.ExecuteConversionPipeline(pipelineConfig)
@@ -130,7 +136,10 @@ func init() {
 	rootCmd.Flags().BoolVarP(&mono, "mono", "m", false, "Downmix to mono")
 	rootCmd.Flags().IntVarP(&tempo, "tempo", "t", 0, "Override loop tempo in BPM (default: original)")
 	rootCmd.Flags().IntVarP(&sliceLimit, "slice-limit", "l", 0, "Max slices per output file")
-	rootCmd.Flags().BoolVarP(&normalizeSplits, "normalize-splits", "n", false, "Balance slices evenly across splits")
+	rootCmd.Flags().BoolVar(&normalizeSplits, "normalize-splits", false, "Balance slices evenly across splits")
 	rootCmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress progress output")
 	rootCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Debug output (Zig struct diagnostics)")
+	rootCmd.Flags().StringVarP(&outputFormat, "format", "f", "wav", "Output format: wav, pti, ot, aif-op1, xy, el, d2pst")
+	rootCmd.Flags().BoolVarP(&noSlices, "no-slices", "n", false, "Ignore REX cue points, render plain unsliced output")
+	rootCmd.Flags().StringVar(&monoMode, "mono-mode", "sum", "Mono downmix strategy: sum, left, right, difference, dual-detect")
 }

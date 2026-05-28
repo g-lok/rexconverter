@@ -77,6 +77,9 @@ type PipelineConfig struct {
 	Quiet           bool  // Suppress "Converting:" progress lines
 	Preserve        bool  // Mirror input directory structure in output
 	Verbose         bool
+	Format          string // Output format: wav, pti, ot, aif-op1, xy, el, d2pst
+	NoSlices        bool   // Ignore REX cue positions, render single unsliced output
+	MonoMode        string // Mono downmix strategy: sum, left, right, difference, dual-detect
 }
 
 // InitEngine initializes the REX SDK framework. Called once at startup.

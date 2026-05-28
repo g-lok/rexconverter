@@ -12,6 +12,20 @@ import (
 	"sync"
 )
 
+type deviceSpec struct {
+	maxSlices int
+}
+
+var deviceMaxSlices = map[string]int{
+	"wav":     0, // unlimited
+	"pti":     0, // single instrument, unlimited slices via playback modes
+	"ot":      64,
+	"aif-op1": 24,
+	"xy":      24,
+	"el":      64,
+	"d2pst":   64,
+}
+
 func runPipeline(cfg PipelineConfig) error {
 	stat, _ := os.Stdin.Stat()
 	if (stat.Mode() & os.ModeCharDevice) == 0 {
@@ -76,25 +90,41 @@ func processFileBuffer(fileData []byte, sourcePath string, cfg PipelineConfig) e
 		sdkTempo = cfg.Tempo * 1000
 	}
 
-	slices, err := RenderSlicesPreview(fileData, cfg.SampleRate, sdkTempo)
-	if err != nil {
-		return fmt.Errorf("slices render failed: %w", err)
+	var slices []SliceExtraction
+	if cfg.NoSlices {
+		loop, err := RenderLoopPreview(fileData, cfg.SampleRate, sdkTempo)
+		if err != nil {
+			return fmt.Errorf("loop render failed: %w", err)
+		}
+		loop.CuePoints = nil
+		slices = []SliceExtraction{*loop}
+	} else {
+		var err error
+		slices, err = RenderSlicesPreview(fileData, cfg.SampleRate, sdkTempo)
+		if err != nil {
+			return fmt.Errorf("slices render failed: %w", err)
+		}
 	}
 
 	if len(slices) == 0 {
 		return nil
 	}
 
-	// Apply mono downmix per-slice
-	if cfg.Mono && slices[0].Metadata.Channels == 2 {
+	channels := slices[0].Metadata.Channels
+	applyMono := cfg.Mono || cfg.Format == "pti"
+
+	if applyMono && channels > 1 {
 		for i := range slices {
-			slices[i].Interleaved = downmixStereoToMono(slices[i].Interleaved)
-			slices[i].TotalFrames = len(slices[i].Interleaved)
+			mono, err := DownmixToMono(slices[i].Interleaved, channels, cfg.MonoMode)
+			if err != nil {
+				return err
+			}
+			slices[i].Interleaved = mono
+			slices[i].TotalFrames = len(mono)
 		}
 		slices[0].Metadata.Channels = 1
 	}
 
-	// Build output chunks: group slices or concatenate into single file
 	var chunks []SliceExtraction
 	if cfg.SliceLimit > 0 {
 		chunks = groupSlices(slices, cfg.SliceLimit, cfg.NormalizeSplits)
@@ -102,12 +132,43 @@ func processFileBuffer(fileData []byte, sourcePath string, cfg PipelineConfig) e
 		chunks = buildSingleOutput(slices)
 	}
 
-	totalFiles := len(chunks)
-	digitWidth := 2
-	if totalFiles > 99 {
-		digitWidth = len(fmt.Sprintf("%d", totalFiles))
+	maxSlices := deviceMaxSlices[cfg.Format]
+	if maxSlices > 0 {
+		for i := range chunks {
+			if len(chunks[i].CuePoints) > maxSlices {
+				if !cfg.Quiet {
+					fmt.Printf("Warning: %s has %d slices, clamping to device max %d\n",
+						filepath.Base(sourcePath), len(chunks[i].CuePoints), maxSlices)
+				}
+				chunks[i].CuePoints = chunks[i].CuePoints[:maxSlices]
+				totalFrames := 0
+				for _, cp := range chunks[i].CuePoints {
+					totalFrames += int(cp.Position)
+				}
+			}
+		}
 	}
-	postfixFormat := fmt.Sprintf("_%%0%dd.wav", digitWidth)
+
+	// Apply format-specific forced specs
+	for i := range chunks {
+		switch cfg.Format {
+		case "pti":
+			if err := ForcePTISpec(&chunks[i]); err != nil {
+				return err
+			}
+		case "aif-op1":
+			if err := Force44100Spec(&chunks[i]); err != nil {
+				return err
+			}
+		case "d2pst":
+			if err := Force48kSpec(&chunks[i]); err != nil {
+				return err
+			}
+		}
+	}
+
+	totalFiles := len(chunks)
+	nameLimit := fileNameLimit(cfg.Format)
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, totalFiles)
@@ -116,28 +177,19 @@ func processFileBuffer(fileData []byte, sourcePath string, cfg PipelineConfig) e
 		wg.Add(1)
 		go func(idx int, c SliceExtraction) {
 			defer wg.Done()
-			finalPath := outputPath(sourcePath, cfg, idx, totalFiles, postfixFormat)
 
-			outDir := filepath.Dir(finalPath)
-			if outDir != "." && outDir != "" {
-				_ = os.MkdirAll(outDir, 0o755)
-			}
+			suffix := splitSuffix(idx, totalFiles, cfg.Format, nameLimit)
+			baseName := outputBaseName(sourcePath, cfg, suffix, cfg.Format)
 
-			outFile, err := os.Create(finalPath)
-			if err != nil {
-				errCh <- fmt.Errorf("failed creating output file %s: %w", finalPath, err)
+			if err := writeOutputFiles(baseName, &c, cfg, idx, totalFiles); err != nil {
+				errCh <- fmt.Errorf("failed encoding for %s: %w", baseName, err)
 				return
 			}
-			defer outFile.Close()
 
 			if !cfg.Quiet {
 				fmt.Printf("Converting: %s -> %s | Slices: %d | Channels: %d | Rate: %dHz | Tempo: %.1f BPM\n",
-					filepath.Base(sourcePath), filepath.Base(finalPath), len(c.CuePoints),
+					filepath.Base(sourcePath), filepath.Base(baseName), len(c.CuePoints),
 					c.Metadata.Channels, c.Metadata.SampleRate, c.Metadata.OriginalTempo)
-			}
-
-			if err := EncodeWavContainer(outFile, &c, cfg.BitRate); err != nil {
-				errCh <- fmt.Errorf("failed encoding container for %s: %w", finalPath, err)
 			}
 		}(idx, c)
 	}
@@ -152,7 +204,226 @@ func processFileBuffer(fileData []byte, sourcePath string, cfg PipelineConfig) e
 	return nil
 }
 
-// groupSlices groups per-slice data into output files with maxSlices per group.
+func writeOutputFiles(basePath string, extraction *SliceExtraction, cfg PipelineConfig, idx, totalFiles int) error {
+	switch cfg.Format {
+	case "wav":
+		path := basePath + ".wav"
+		outDir := filepath.Dir(path)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return EncodeWavContainer(f, extraction, cfg.BitRate)
+
+	case "pti":
+		path := basePath + ".pti"
+		outDir := filepath.Dir(path)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return EncodePTI(f, extraction)
+
+	case "ot":
+		wavPath := basePath + ".wav"
+		otPath := basePath + ".ot"
+		outDir := filepath.Dir(wavPath)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		fw, err := os.Create(wavPath)
+		if err != nil {
+			return err
+		}
+		if err := EncodeWavContainer(fw, extraction, cfg.BitRate); err != nil {
+			fw.Close()
+			return err
+		}
+		fw.Close()
+
+		bpm := extraction.Metadata.OriginalTempo
+		if bpm == 0 {
+			bpm = extraction.Metadata.Tempo
+		}
+		fo, err := os.Create(otPath)
+		if err != nil {
+			return err
+		}
+		defer fo.Close()
+		return EncodeOT(fo, extraction, bpm)
+
+	case "aif-op1":
+		path := basePath + ".aif"
+		outDir := filepath.Dir(path)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return EncodeOP1AIF(f, extraction)
+
+	case "xy":
+		path := basePath + ".preset.zip"
+		outDir := filepath.Dir(path)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return EncodeXYPreset(f, extraction)
+
+	case "el":
+		wavPath := basePath + ".wav"
+		txtPath := basePath + "_slices.txt"
+		outDir := filepath.Dir(wavPath)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		fw, err := os.Create(wavPath)
+		if err != nil {
+			return err
+		}
+		if err := EncodeWavContainer(fw, extraction, cfg.BitRate); err != nil {
+			fw.Close()
+			return err
+		}
+		fw.Close()
+
+		ft, err := os.Create(txtPath)
+		if err != nil {
+			return err
+		}
+		defer ft.Close()
+		return EncodeEL(ft, extraction)
+
+	case "d2pst":
+		path := basePath + ".dt2pst"
+		outDir := filepath.Dir(path)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		name := filepath.Base(basePath)
+		return EncodeDT2Preset(f, extraction, name)
+
+	default:
+		path := basePath + ".wav"
+		outDir := filepath.Dir(path)
+		if outDir != "." && outDir != "" {
+			_ = os.MkdirAll(outDir, 0o755)
+		}
+		f, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return EncodeWavContainer(f, extraction, cfg.BitRate)
+	}
+}
+
+func fileNameLimit(format string) int {
+	switch format {
+	case "d2pst":
+		return 12
+	case "aif-op1":
+		return 8
+	case "pti":
+		return 31
+	default:
+		return 255
+	}
+}
+
+func sanitizeName(name string, limit int) string {
+	sanitized := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_' || c == '+' || c == '@' {
+			sanitized = append(sanitized, c)
+		} else {
+			sanitized = append(sanitized, '_')
+		}
+	}
+	result := strings.TrimSpace(string(sanitized))
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	if result == "" {
+		result = "output"
+	}
+	return result
+}
+
+func splitSuffix(idx, totalFiles int, format string, nameLimit int) string {
+	if totalFiles <= 1 {
+		return ""
+	}
+	switch format {
+	case "d2pst":
+		if nameLimit >= 3 {
+			return fmt.Sprintf("_%d", idx+1)
+		}
+		return fmt.Sprintf("_%d", idx+1)
+	case "aif-op1":
+		return fmt.Sprintf("_%d", idx+1)
+	default:
+		return fmt.Sprintf("_%02d", idx+1)
+	}
+}
+
+func outputBaseName(sourcePath string, cfg PipelineConfig, suffix, format string) string {
+	if sourcePath == "stdin" {
+		baseName := "output"
+		if cfg.OutputFile != "" {
+			baseName = strings.TrimSuffix(cfg.OutputFile, filepath.Ext(cfg.OutputFile))
+		}
+		nameLimit := fileNameLimit(format)
+		baseName = sanitizeName(baseName+suffix, nameLimit)
+		if cfg.OutputDir != "" {
+			return filepath.Join(cfg.OutputDir, baseName)
+		}
+		return baseName
+	}
+
+	baseName := strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath))
+	if cfg.OutputFile != "" {
+		baseName = strings.TrimSuffix(cfg.OutputFile, filepath.Ext(cfg.OutputFile))
+	}
+
+	nameLimit := fileNameLimit(format)
+	suffixed := sanitizeName(baseName, nameLimit-len(suffix))
+	suffixed += suffix
+
+	if cfg.OutputDir != "" {
+		if cfg.Preserve && cfg.InputDir != "" {
+			relDir, err := filepath.Rel(cfg.InputDir, filepath.Dir(sourcePath))
+			if err == nil && relDir != "." && relDir != "" {
+				return filepath.Join(cfg.OutputDir, relDir, suffixed)
+			}
+		}
+		return filepath.Join(cfg.OutputDir, suffixed)
+	}
+	return suffixed
+}
+
 func groupSlices(slices []SliceExtraction, maxSlices int, normalize bool) []SliceExtraction {
 	total := len(slices)
 	if total == 0 || maxSlices <= 0 {
@@ -229,7 +500,6 @@ func groupSlices(slices []SliceExtraction, maxSlices int, normalize bool) []Slic
 	return results
 }
 
-// buildSingleOutput concatenates all slices into a single SliceExtraction.
 func buildSingleOutput(slices []SliceExtraction) []SliceExtraction {
 	if len(slices) == 0 {
 		return nil
@@ -266,52 +536,6 @@ func buildSingleOutput(slices []SliceExtraction) []SliceExtraction {
 			TotalFrames: totalFrames,
 		},
 	}
-}
-
-func outputPath(sourcePath string, cfg PipelineConfig, idx, totalFiles int, postfixFormat string) string {
-	if sourcePath == "stdin" {
-		outName := "output"
-		if cfg.OutputFile != "" {
-			outName = strings.TrimSuffix(cfg.OutputFile, ".wav")
-		}
-		if totalFiles > 1 {
-			return fmt.Sprintf(outName+postfixFormat, idx+1)
-		}
-		return outName + ".wav"
-	}
-
-	baseName := strings.TrimSuffix(filepath.Base(sourcePath), filepath.Ext(sourcePath))
-	if cfg.OutputFile != "" {
-		baseName = strings.TrimSuffix(cfg.OutputFile, ".wav")
-	}
-
-	var nameWithExt string
-	if totalFiles > 1 {
-		nameWithExt = fmt.Sprintf(baseName+postfixFormat, idx+1)
-	} else {
-		nameWithExt = baseName + ".wav"
-	}
-
-	if cfg.OutputDir != "" {
-		if cfg.Preserve && cfg.InputDir != "" {
-			relDir, err := filepath.Rel(cfg.InputDir, filepath.Dir(sourcePath))
-			if err == nil && relDir != "." {
-				return filepath.Join(cfg.OutputDir, relDir, filepath.Base(nameWithExt))
-			}
-			return filepath.Join(cfg.OutputDir, filepath.Base(nameWithExt))
-		}
-		return filepath.Join(cfg.OutputDir, filepath.Base(nameWithExt))
-	}
-
-	return nameWithExt
-}
-
-func downmixStereoToMono(stereoData []float32) []float32 {
-	mono := make([]float32, len(stereoData)/2)
-	for i := 0; i < len(mono); i++ {
-		mono[i] = (stereoData[i*2] + stereoData[i*2+1]) / 2.0
-	}
-	return mono
 }
 
 func scanDirectory(dir string, recursive bool) ([]string, error) {

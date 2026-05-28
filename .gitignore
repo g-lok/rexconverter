@@ -14,6 +14,8 @@ build/
 # Generated Go archive (from Go c-archive build step)
 go_engine.a
 go_engine.h
+rexconverter.a
+rexconverter.h
 
 # REX SDK full archive (not needed in repo; users download separately)
 rexlibs/

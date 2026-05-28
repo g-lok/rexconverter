@@ -2,16 +2,18 @@
 
 [![CI](https://github.com/g-lok/rexconverter/actions/workflows/ci.yml/badge.svg)](https://github.com/g-lok/rexconverter/actions/workflows/ci.yml)
 
-Convert Reason Studios ReCycle (.rex, .rx2) files to cued WAV files for Dirtywave M8 and DAWs.
+Convert ReCycle files (.rex, .rx2) to beat machine native formats: WAV, PTI (Polyend Tracker), OT (Elektron Octatrack), OP-1 AIFF, XY preset (OP-XY), Elektron multi-sample text, and DT2 preset (Digitakt II).
 
 ## Features
 
+- **Multi-format output** (`--format`) — WAV, PTI, OT, OP-1 AIFF, XY preset ZIP, Elektron multi-sample text, DT2 preset (Digitakt II)
 - **Tempo-based loop rendering** — matches ReCycle's preview behavior using the REX SDK
 - **RIFF cue markers** — each slice gets a proper cue point for M8 and DAW compatibility
 - **Batch conversion** — convert entire directories of REX files
 - **Slice splitting** (`--slice-limit`) — split loop renders at cue boundaries for multi-output
 - **Mono downmix, sample rate/bit depth conversion, tempo override**
 - **Cross-platform** — macOS (native), Windows (cross-compiled)
+- **Roadmap**: General-purpose cross-converter (WAV/AIFF/MP3/FLAC/OGG ↔ any output format via pure Go decoders, optional ffmpeg fallback)
 
 ## System Requirements
 
@@ -111,7 +113,10 @@ rexconverter [INPUT_FILES...] [flags]
 | `--mono`             | `-m`  | Downmix to mono                               |
 | `--tempo`            | `-t`  | Override loop tempo in BPM (0 = original)     |
 | `--slice-limit`      | `-l`  | Max slices per output file                    |
-| `--normalize-splits` | `-n`  | Balance slices evenly across splits           |
+| `--normalize-splits` |       | Balance slices evenly across splits           |
+| `--no-slices`        | `-n`  | Render as single monolithic sample (no slice cues) |
+| `--mono-mode`        |       | Mono downmix strategy: sum, left, right, difference, dual-detect (default: sum) |
+| `--format`           | `-f`  | Output format: wav, pti, ot, aif-op1, xy, el, d2pst |
 | `--quiet`            | `-q`  | Suppress progress output                      |
 | `--verbose`          | `-v`  | Debug output (Zig struct diagnostics)         |
 | `--version`          |       | Print version                                 |
@@ -134,18 +139,69 @@ rexconverter loop.rx2 --tempo 140 --quiet -o output.wav
 
 # Batch directory, preserve structure
 rexconverter --input-dir ./tracks --output-dir ./wavs --preserve
+
+# Polyend Tracker instrument (forces 44.1kHz/16-bit/mono)
+rexconverter loop.rx2 --format pti -o loop.pti
+
+# Elektron Octatrack (WAV + .ot sidecar)
+rexconverter loop.rx2 --format ot -o loop.wav
+
+# OP-1 / OP-Z drum instrument
+rexconverter loop.rx2 --format aif-op1 -o loop.aif
+
+# OP-XY drum preset (ZIP with per-slice WAVs + patch.json)
+rexconverter loop.rx2 --format xy -o loop.preset.zip
+
+# Elektron multi-sample text sidecar (WAV + _slices.txt)
+rexconverter loop.rx2 --format el -o loop.wav
+
+# Digitakt II preset (ZIP with manifest.json + WAV + preset binary)
+rexconverter loop.rx2 --format d2pst -o loop.d2pst
+
+# Render as single continuous sample (no slice cues)
+rexconverter loop.rx2 --no-slices -o loop.wav
+
+# Mono downmix using left channel only
+rexconverter loop.rx2 --mono --mono-mode left -o output.wav
+
+# Auto-detected dual-detect: stereo if balanced, mono if identical
+rexconverter loop.rx2 --mono --mono-mode dual-detect -o output.wav
 ```
 
 ## How It Works
 
 1. REX files are decoded by the Propellerhead REX SDK
 2. Slices are rendered as a tempo-based loop preview (matching ReCycle's export)
-3. Audio is written as a WAV with RIFF cue chunks
+3. Audio + cue points are routed to the selected output encoder:
+   - **WAV**: RIFF with `fmt → data → cue` chunks, `dwPosition=0` and `dwChunkStart=0` for M8
+   - **PTI**: 392-byte binary header + 44.1kHz/16-bit mono PCM (Polyend Tracker)
+   - **OT**: 0x340-byte big-endian sidecar with 64-slice table (Octatrack)
+   - **AIF-OP1**: AIFF with APPL "op-1" JSON chunk (OP-1/OP-Z)
+   - **XY**: ZIP with `patch.json` + per-slice WAVs (OP-XY)
+   - **EL**: WAV + TOML-like text sidecar (Elektron multi-sample)
+   - **DT2**: ZIP with manifest.json + 48kHz WAV + TLV tag-encoded preset (Digitakt II)
 4. `--slice-limit` partitions the loop at cue boundaries, creating multiple files
 
-The output WAV uses `fmt → data → cue` chunk ordering, with `dwPosition=0`
-and `dwChunkStart=0` for M8 compatibility. `dwSampleOffset` uses sample offsets
-(not byte offsets) per the RIFF specification.
+Format-specific constraints (PTI, OP-1 AIFF) force 44.1kHz/16-bit/mono regardless of CLI flags.
+
+## Roadmap
+
+### Phase 1 — REX → multi-format output (current)
+Convert REX/RX2/RCY to any output format using the REX SDK for decoding.
+
+### Phase 2 — General-purpose cross-converter (future)
+Any audio input → any output format. Input readers via:
+- **WAV/AIFF**: Direct format parsing (hand-rolled, no deps)
+- **MP3**: Pure Go decoder (`go-mp3`, Apache 2.0)
+- **FLAC**: Pure Go decoder (`go-flac`, MIT)
+- **OGG/Vorbis**: Pure Go decoder (`oggvorbis`, MIT)
+- **Other formats**: Optional ffmpeg subprocess fallback (runtime-detected, not hard dep)
+- **Auto-slicing**: Manual grid + explicit list strategies (zero-dependency). essentia auto-detect deferred.
+- **Manual grid**: Slice by user-specified BPM + bars (`--bpm`, `--bars`)
+
+No external runtime dependencies beyond `go get` for pure Go decoders. ffmpeg is never required.
+
+The REX SDK is **read-only** — producing REX/RX2 files is not possible and not a goal.
 
 ## REX SDK Dependency
 
@@ -155,11 +211,16 @@ provided by Reason Studios under a royalty-free license for study, amendment, an
 **The REX SDK is NOT open source and is NOT covered by this project's MIT license.**
 It cannot be used with copyleft-licensed open source software.
 
+The SDK is **read-only** — it decodes REX files but provides no API to create them.
+Producing REX/RX2 output is not possible and not a goal.
+
 Release archives bundle the SDK framework binary (`Frameworks/REX Shared Library.framework/`
 on macOS, `REX Shared Library.dll` on Windows) for end-user convenience. These binaries
 remain proprietary Reason Studios property and are not subject to the MIT license.
 
-See `REX_SDK_LICENSE.txt` and `NOTICE.md` for full license terms and attribution.
+**Phase 2** (general-purpose conversion) uses pure Go decoders for common formats — no linking
+required, no license conflict with REX SDK. The REX SDK is only needed for REX input. ffmpeg
+is an optional fallback for unsupported formats, never a hard dependency.
 
 ## SHA256 Verification
 
