@@ -112,7 +112,6 @@ func TestWAVHeaderStructure(t *testing.T) {
 }
 
 func TestWAVRoundTrip(t *testing.T) {
-	// Write a known WAV, read it back with go-audio/wav decoder.
 	dir := t.TempDir()
 	wavPath := filepath.Join(dir, "test.wav")
 
