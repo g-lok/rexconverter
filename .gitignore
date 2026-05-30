@@ -1,3 +1,6 @@
+# MacOS bullshit
+.DS_Store
+
 # Binaries
 *.exe
 *.exe~
